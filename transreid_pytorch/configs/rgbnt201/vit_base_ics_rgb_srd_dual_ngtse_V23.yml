@@ -1,0 +1,83 @@
+MODEL:
+  PRETRAIN_CHOICE: 'finetune' # V23 change: continue from V21 best local-part checkpoint.
+  PRETRAIN_PATH: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V21/transformer_best.pth'
+  PRETRAIN_HW_RATIO: 2
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  TRANSFORMER_TYPE: 'vit_base_patch16_224_TransReID'
+  STRIDE_SIZE: [16, 16]
+  STEM_CONV: True
+  EXTRA_DROP_PATH: False
+  DUAL_BRANCH: True
+  DUAL_LOCAL: True
+  DEVIDE_LENGTH: 4
+  RE_ARRANGE: False # V23 keep: semantic horizontal part split from V21.
+  SHIFT_NUM: 5
+  SHUFFLE_GROUP: 2
+  NGTSE: True
+  NGTSE_MODE: 'token'
+  NGTSE_LAYERS: [11]
+  NGTSE_KERNEL: 5
+  NGTSE_BETA: 0.25
+  NGTSE_GATE_TYPE: 'q'
+  NGTSE_DETACH_GATE: True
+  NGTSE_RESIDUAL_GATE: True
+  NGTSE_WEIGHTED_STRUCTURE: True
+
+INPUT:
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  PROB: 0.5
+  RE_PROB: 0.45
+  PADDING: 10
+  PIXEL_MEAN: [0.5, 0.5, 0.5]
+  PIXEL_STD: [0.5, 0.5, 0.5]
+
+DATASETS:
+  NAMES: ('rgbnt201_rgb')
+  ROOT_DIR: ('../data')
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+DISTILL:
+  ENABLED: True
+  DARK_ROOT: '../data/Syn_dark_market_msmt_v3'
+  GT_ROOT: '../data/Syn_dark_market_msmt_v3_GT'
+  TEACHER_WEIGHT: '../log/transreid/srd_teacher/vit_base_ics_gt/transformer_best.pth'
+  LAMBDA_KD: 0.02
+  ALPHA: 1.0
+  BETA: 0.8
+  TEMPERATURE: 4.0
+  AUX_LOSS_WEIGHT: 0.8 # V23 change: reduce SRD auxiliary pull; V21 main/local feature already strong.
+
+SOLVER:
+  OPTIMIZER_NAME: 'SGD'
+  MAX_EPOCHS: 20 # V23 change: short low-LR polish around V21 best.
+  BASE_LR: 0.000005 # V23 change: close to V21 epoch110 LR, avoids disturbing the local-part feature.
+  WARMUP_EPOCHS: 1
+  IMS_PER_BATCH: 64
+  WARMUP_METHOD: 'cosine'
+  LARGE_FC_LR: False
+  CHECKPOINT_PERIOD: 1
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 1 # V23 change: catch small Rank1/mAP fluctuations instead of missing the best epoch.
+  WEIGHT_DECAY:  1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  BIAS_LR_FACTOR: 2
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 256
+  RE_RANKING: False
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V23'

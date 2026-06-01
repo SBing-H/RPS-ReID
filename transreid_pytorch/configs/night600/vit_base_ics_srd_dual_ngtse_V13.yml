@@ -1,0 +1,83 @@
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  PRETRAIN_PATH: '../model/vit_base_ics_cfs_lup.pth'
+  PRETRAIN_HW_RATIO: 2
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  TRANSFORMER_TYPE: 'vit_base_patch16_224_TransReID'
+  STRIDE_SIZE: [16, 16]
+  STEM_CONV: True
+  EXTRA_DROP_PATH: False
+  DUAL_BRANCH: True
+  DUAL_LOCAL: True # V13 change: follow RGBNT201 V21 local part branch.
+  DEVIDE_LENGTH: 4
+  RE_ARRANGE: False # V13 change: preserve semantic horizontal parts.
+  SHIFT_NUM: 5
+  SHUFFLE_GROUP: 2
+  NGTSE: True
+  NGTSE_MODE: 'token' # V13 change: follow RGBNT201 V21 token enhancement.
+  NGTSE_LAYERS: [11]
+  NGTSE_KERNEL: 5
+  NGTSE_BETA: 0.25
+  NGTSE_GATE_TYPE: 'q'
+  NGTSE_DETACH_GATE: True
+  NGTSE_RESIDUAL_GATE: True
+  NGTSE_WEIGHTED_STRUCTURE: True
+
+INPUT:
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  PROB: 0.5
+  RE_PROB: 0.45 #V8: 0.5
+  PADDING: 10
+  PIXEL_MEAN: [0.5, 0.5, 0.5]
+  PIXEL_STD: [0.5, 0.5, 0.5]
+
+DATASETS:
+  NAMES: ('night600')
+  ROOT_DIR: ('../data')
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+DISTILL:
+  ENABLED: True
+  DARK_ROOT: '../data/Syn_dark_market_msmt_v3'
+  GT_ROOT: '../data/Syn_dark_market_msmt_v3_GT'
+  TEACHER_WEIGHT: '../log/transreid/srd_teacher/vit_base_ics_gt/transformer_best.pth'
+  LAMBDA_KD: 0.02
+  ALPHA: 1.0
+  BETA: 0.8
+  TEMPERATURE: 4.0
+  AUX_LOSS_WEIGHT: 1.0
+
+SOLVER:
+  OPTIMIZER_NAME: 'SGD'
+  MAX_EPOCHS: 120
+  BASE_LR: 0.0004
+  WARMUP_EPOCHS: 20
+  IMS_PER_BATCH: 64
+  WARMUP_METHOD: 'cosine'
+  LARGE_FC_LR: False
+  CHECKPOINT_PERIOD: 5
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 5
+  WEIGHT_DECAY:  1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  BIAS_LR_FACTOR: 2
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 256
+  RE_RANKING: False
+  WEIGHT: ''
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: '../log/transreid/night600/vit_base_ics_srd_dual_ngtse_V13'
