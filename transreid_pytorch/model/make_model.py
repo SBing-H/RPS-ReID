@@ -707,9 +707,26 @@ class DualBranchTransformer(nn.Module):
             clean_key = key.replace('module.', '')
             if clean_key in own_state and own_state[clean_key].shape == value.shape:
                 own_state[clean_key].copy_(value)
-        if self.dual_local:
+        if self.dual_local and not self._has_dual_local_param(param_dict):
             self._load_local_block_param(param_dict, own_state)
         print('Loading pretrained model from {}'.format(trained_path))
+
+    @staticmethod
+    def _has_dual_local_param(param_dict):
+        local_prefixes = (
+            'raw_global_block.',
+            'raw_local_block.',
+            'struct_global_block.',
+            'struct_local_block.',
+            'local_fusion.',
+            'local_bottlenecks.',
+            'local_classifiers.',
+        )
+        for key in param_dict:
+            clean_key = key.replace('module.', '')
+            if clean_key.startswith(local_prefixes):
+                return True
+        return False
 
     def _load_local_block_param(self, param_dict, own_state):
         raw_last_idx = len(self.raw_branch.base.blocks) - 1
