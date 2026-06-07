@@ -13,13 +13,13 @@ MODEL:
   STEM_CONV: True
   EXTRA_DROP_PATH: False
   DUAL_BRANCH: True
-  DUAL_LOCAL: True # V21 change: keep local part branch, but use semantic horizontal split.
+  DUAL_LOCAL: True # V14 keep V13: dual local branch gave the best mAP so far.
   DEVIDE_LENGTH: 4
-  RE_ARRANGE: False # V21 change: no patch shuffle; preserve head/upper/lower/leg-like horizontal regions.
+  RE_ARRANGE: False # V14 keep V13: preserve semantic horizontal parts.
   SHIFT_NUM: 5
   SHUFFLE_GROUP: 2
   NGTSE: True
-  NGTSE_MODE: 'token'
+  NGTSE_MODE: 'token' # V14 keep V13: attention-only V12 was weaker.
   NGTSE_LAYERS: [11]
   NGTSE_KERNEL: 5
   NGTSE_BETA: 0.25
@@ -32,13 +32,13 @@ INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
   PROB: 0.5
-  RE_PROB: 0.45
+  RE_PROB: 0.5 # V14 change: restore V8/V9/V11 erasing strength; V13 used 0.45.
   PADDING: 10
   PIXEL_MEAN: [0.5, 0.5, 0.5]
   PIXEL_STD: [0.5, 0.5, 0.5]
 
 DATASETS:
-  NAMES: ('rgbnt201_rgb')
+  NAMES: ('night600')
   ROOT_DIR: ('../data')
 
 DATALOADER:
@@ -55,12 +55,12 @@ DISTILL:
   ALPHA: 1.0
   BETA: 0.8
   TEMPERATURE: 4.0
-  AUX_LOSS_WEIGHT: 1.0
+  AUX_LOSS_WEIGHT: 0.9 # V14 change: reduce SRD aux dominance so Night600 main/local losses can drive Rank-1.
 
 SOLVER:
   OPTIMIZER_NAME: 'SGD'
   MAX_EPOCHS: 120
-  BASE_LR: 0.00028
+  BASE_LR: 0.0004
   WARMUP_EPOCHS: 20
   IMS_PER_BATCH: 64
   WARMUP_METHOD: 'cosine'
@@ -80,4 +80,4 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V27'
+OUTPUT_DIR: '../log/transreid/night600/vit_base_ics_srd_dual_ngtse_V14'

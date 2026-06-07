@@ -11,11 +11,14 @@ MODEL:
   TRANSFORMER_TYPE: 'vit_base_patch16_224_TransReID'
   STRIDE_SIZE: [16, 16]
   STEM_CONV: True
+  DROPOUT_RATE: 0.0
   EXTRA_DROP_PATH: False
   DUAL_BRANCH: True
-  DUAL_LOCAL: True # V21 change: keep local part branch, but use semantic horizontal split.
-  DEVIDE_LENGTH: 4
-  RE_ARRANGE: False # V21 change: no patch shuffle; preserve head/upper/lower/leg-like horizontal regions.
+  DUAL_LOCAL: True # V17 coarse-local: use DUAL_LOCAL, but split into larger low-noise body regions.
+  LOCAL_LOSS_WEIGHT: 0.20 # Global loss 80%, local loss 20%; stronger than V16 because there are only 2 parts.
+  LOCAL_FEAT_WEIGHT: 0.35 # Let coarse local features affect retrieval, but keep global feature dominant.
+  DEVIDE_LENGTH: 2
+  RE_ARRANGE: False
   SHIFT_NUM: 5
   SHUFFLE_GROUP: 2
   NGTSE: True
@@ -32,13 +35,13 @@ INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
   PROB: 0.5
-  RE_PROB: 0.45
+  RE_PROB: 0.45 # Softer erasing protects the coarse local branch from losing too much identity texture.
   PADDING: 10
   PIXEL_MEAN: [0.5, 0.5, 0.5]
   PIXEL_STD: [0.5, 0.5, 0.5]
 
 DATASETS:
-  NAMES: ('rgbnt201_rgb')
+  NAMES: ('night600')
   ROOT_DIR: ('../data')
 
 DATALOADER:
@@ -60,14 +63,14 @@ DISTILL:
 SOLVER:
   OPTIMIZER_NAME: 'SGD'
   MAX_EPOCHS: 120
-  BASE_LR: 0.00028
+  BASE_LR: 0.0004
   WARMUP_EPOCHS: 20
   IMS_PER_BATCH: 64
   WARMUP_METHOD: 'cosine'
   LARGE_FC_LR: False
-  CHECKPOINT_PERIOD: 5
+  CHECKPOINT_PERIOD: 10
   LOG_PERIOD: 50
-  EVAL_PERIOD: 5
+  EVAL_PERIOD: 10
   WEIGHT_DECAY:  1e-4
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
@@ -80,4 +83,4 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V27'
+OUTPUT_DIR: '../log/transreid/night600/vit_base_ics_srd_dual_ngtse_V17'

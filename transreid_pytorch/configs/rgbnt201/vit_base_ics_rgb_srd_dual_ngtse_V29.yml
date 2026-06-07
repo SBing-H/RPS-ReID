@@ -13,7 +13,9 @@ MODEL:
   STEM_CONV: True
   EXTRA_DROP_PATH: False
   DUAL_BRANCH: True
-  DUAL_LOCAL: True # V21 change: keep local part branch, but use semantic horizontal split.
+  DUAL_LOCAL: True # V15 keep V13: dual local branch is still the best mAP setting.
+  LOCAL_LOSS_WEIGHT: 0.35 # V15 change: reduce local loss from the default 0.5 for noisy Night600 parts.
+  LOCAL_FEAT_WEIGHT: 0.75 # V15 change: keep local cues but lower their retrieval feature contribution.
   DEVIDE_LENGTH: 4
   RE_ARRANGE: False # V21 change: no patch shuffle; preserve head/upper/lower/leg-like horizontal regions.
   SHIFT_NUM: 5
@@ -80,4 +82,4 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V27'
+OUTPUT_DIR: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V29'

@@ -11,11 +11,14 @@ MODEL:
   TRANSFORMER_TYPE: 'vit_base_patch16_224_TransReID'
   STRIDE_SIZE: [16, 16]
   STEM_CONV: True
+  DROPOUT_RATE: 0.0
   EXTRA_DROP_PATH: False
   DUAL_BRANCH: True
-  DUAL_LOCAL: True # V21 change: keep local part branch, but use semantic horizontal split.
+  DUAL_LOCAL: True # V18: keep DUAL_LOCAL, but make local cues weaker than V16.
+  LOCAL_LOSS_WEIGHT: 0.08 # V16 0.10 was good; lower slightly to protect global Rank-1 ordering.
+  LOCAL_FEAT_WEIGHT: 0.15 # V16 0.20 still added local noise; keep local retrieval cue but reduce it.
   DEVIDE_LENGTH: 4
-  RE_ARRANGE: False # V21 change: no patch shuffle; preserve head/upper/lower/leg-like horizontal regions.
+  RE_ARRANGE: False
   SHIFT_NUM: 5
   SHUFFLE_GROUP: 2
   NGTSE: True
@@ -32,13 +35,13 @@ INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
   PROB: 0.5
-  RE_PROB: 0.45
+  RE_PROB: 0.5 # Keep V16/V8 regularization; V17's softer erasing did not help.
   PADDING: 10
   PIXEL_MEAN: [0.5, 0.5, 0.5]
   PIXEL_STD: [0.5, 0.5, 0.5]
 
 DATASETS:
-  NAMES: ('rgbnt201_rgb')
+  NAMES: ('night600')
   ROOT_DIR: ('../data')
 
 DATALOADER:
@@ -60,7 +63,7 @@ DISTILL:
 SOLVER:
   OPTIMIZER_NAME: 'SGD'
   MAX_EPOCHS: 120
-  BASE_LR: 0.00028
+  BASE_LR: 0.0004
   WARMUP_EPOCHS: 20
   IMS_PER_BATCH: 64
   WARMUP_METHOD: 'cosine'
@@ -80,4 +83,4 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: '../log/transreid/rgbnt201/vit_base_ics_rgb_srd_dual_ngtse_V27'
+OUTPUT_DIR: '../log/transreid/night600/vit_base_ics_srd_dual_ngtse_V18'

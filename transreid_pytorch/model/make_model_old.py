@@ -494,9 +494,6 @@ class DualBranchTransformer(nn.Module):
         if cfg.MODEL.JPM:
             raise RuntimeError('DualBranchTransformer currently supports JPM=False only.')
         self.dual_local = cfg.MODEL.DUAL_LOCAL
-        self.local_feat_weight = float(cfg.MODEL.LOCAL_FEAT_WEIGHT)
-        if self.local_feat_weight < 0.0:
-            raise ValueError('MODEL.LOCAL_FEAT_WEIGHT must be non-negative.')
 
         self.raw_branch = build_transformer(
             num_classes,
@@ -693,10 +690,9 @@ class DualBranchTransformer(nn.Module):
                 bottleneck(local_feat)
                 for bottleneck, local_feat in zip(self.local_bottlenecks, local_feats)
             ]
-            local_feat_scale = self.local_feat_weight / self.divide_length
             if self.neck_feat == 'after':
-                return torch.cat([feat] + [local_bn_feat * local_feat_scale for local_bn_feat in local_bn_feats], dim=1)
-            return torch.cat([global_feat] + [local_feat * local_feat_scale for local_feat in local_feats], dim=1)
+                return torch.cat([feat] + [local_bn_feat / self.divide_length for local_bn_feat in local_bn_feats], dim=1)
+            return torch.cat([global_feat] + [local_feat / self.divide_length for local_feat in local_feats], dim=1)
 
         if self.neck_feat == 'after':
             return feat
@@ -711,26 +707,9 @@ class DualBranchTransformer(nn.Module):
             clean_key = key.replace('module.', '')
             if clean_key in own_state and own_state[clean_key].shape == value.shape:
                 own_state[clean_key].copy_(value)
-        if self.dual_local and not self._has_dual_local_param(param_dict):
+        if self.dual_local:
             self._load_local_block_param(param_dict, own_state)
         print('Loading pretrained model from {}'.format(trained_path))
-
-    @staticmethod
-    def _has_dual_local_param(param_dict):
-        local_prefixes = (
-            'raw_global_block.',
-            'raw_local_block.',
-            'struct_global_block.',
-            'struct_local_block.',
-            'local_fusion.',
-            'local_bottlenecks.',
-            'local_classifiers.',
-        )
-        for key in param_dict:
-            clean_key = key.replace('module.', '')
-            if clean_key.startswith(local_prefixes):
-                return True
-        return False
 
     def _load_local_block_param(self, param_dict, own_state):
         raw_last_idx = len(self.raw_branch.base.blocks) - 1
