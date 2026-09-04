@@ -11,30 +11,31 @@ MODEL:
   TRANSFORMER_TYPE: 'vit_base_patch16_224_TransReID'
   STRIDE_SIZE: [16, 16]
   STEM_CONV: True
+  DROPOUT_RATE: 0.0
+  DROP_PATH: 0.1
   EXTRA_DROP_PATH: False
   DUAL_BRANCH: True
-  DUAL_LOCAL: True # V15 keep V13: dual local branch is still the best mAP setting.
-  LOCAL_LOSS_WEIGHT: 0.35 # V15 change: reduce local loss from the default 0.5 for noisy Night600 parts.
-  LOCAL_FEAT_WEIGHT: 0.75 # V15 change: keep local cues but lower their retrieval feature contribution.
+  DUAL_LOCAL: True
+  LOCAL_LOSS_WEIGHT: 0.10
+  LOCAL_FEAT_WEIGHT: 0.25
   DEVIDE_LENGTH: 4
-  RE_ARRANGE: False # V15 keep V13: semantic horizontal parts work better for this local branch.
+  RE_ARRANGE: False
   SHIFT_NUM: 5
   SHUFFLE_GROUP: 2
-  NGTSE: True
-  NGTSE_MODE: 'token' # V15 keep V13: token NG-TSE beat attention-only V12.
-  NGTSE_LAYERS: [11]
-  NGTSE_KERNEL: 5
-  NGTSE_BETA: 0.25
-  NGTSE_GATE_TYPE: 'q'
-  NGTSE_DETACH_GATE: True
-  NGTSE_RESIDUAL_GATE: True
-  NGTSE_WEIGHTED_STRUCTURE: True
+  PHOTOMETRIC_ORDER: False
+  PHOTOMETRIC_ORDER_STRUCTURE_ATTENTION: True
+  PHOTOMETRIC_ORDER_SCALES: [1, 2]
+  PHOTOMETRIC_ORDER_TEMPERATURE: 0.10
+  PHOTOMETRIC_ORDER_MARGIN: 0.02
+  PHOTOMETRIC_ORDER_ATTN_LAYERS: [11]
+  PHOTOMETRIC_ORDER_ATTN_SCALE: 0.20
+  PHOTOMETRIC_ORDER_ATTN_RADIUS: 2
 
 INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
   PROB: 0.5
-  RE_PROB: 0.45 # V15 restore V13: V14's 0.5 over-regularized dual-local/SRD training.
+  RE_PROB: 0.5
   PADDING: 10
   PIXEL_MEAN: [0.5, 0.5, 0.5]
   PIXEL_STD: [0.5, 0.5, 0.5]
@@ -57,7 +58,8 @@ DISTILL:
   ALPHA: 1.0
   BETA: 0.8
   TEMPERATURE: 4.0
-  AUX_LOSS_WEIGHT: 1.0 # V15 change: mild SRD increase after V14's 0.9 underperformed.
+  AUX_LOSS_WEIGHT: 1.0
+  PHOTOMETRIC_ORDER_LOSS: False
 
 SOLVER:
   OPTIMIZER_NAME: 'SGD'
@@ -67,12 +69,13 @@ SOLVER:
   IMS_PER_BATCH: 64
   WARMUP_METHOD: 'cosine'
   LARGE_FC_LR: False
-  CHECKPOINT_PERIOD: 10
+  CHECKPOINT_PERIOD: 5
   LOG_PERIOD: 50
-  EVAL_PERIOD: 10
-  WEIGHT_DECAY:  1e-4
+  EVAL_PERIOD: 5
+  WEIGHT_DECAY: 1e-4
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
+  SEED: 1234
 
 TEST:
   EVAL: True
@@ -82,4 +85,4 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: '../log/transreid/night600/vit_base_ics_srd_dual_ngtse_V15'
+OUTPUT_DIR: '../log/transreid/night600/vit_base_ics_srd_dual_photometric_order_structure_attention'

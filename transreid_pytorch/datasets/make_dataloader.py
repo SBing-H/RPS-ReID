@@ -14,6 +14,8 @@ from .mm import MM
 from .srd_pair import SRDPairDataset, build_srd_pairs, srd_pair_collate_fn
 from .syn_market_msmt import SynDarkMarketMSMT, SynDarkMarketMSMTGT
 from .rgbnt201 import RGBNT201RGB, RGBNT201RGB141
+from .boxtrack_reid import BoxTrackReID
+from .nightreid import NightReID
 __factory = {
     'market1501': Market1501,
     'night600': Night600,
@@ -23,6 +25,8 @@ __factory = {
     'syn_dark_market_msmt_gt': SynDarkMarketMSMTGT,
     'rgbnt201_rgb': RGBNT201RGB,
     'rgbnt201_rgb_141': RGBNT201RGB141,
+    'boxtrack_reid': BoxTrackReID,
+    'nightreid': NightReID,
 }
 
 def train_collate_fn(batch):
@@ -121,7 +125,17 @@ def make_dataloader(cfg, is_train=True):
     aux_num_classes = 0
     if is_train and cfg.DISTILL.ENABLED:
         aux_pairs, aux_num_classes = build_srd_pairs(cfg.DISTILL.DARK_ROOT, cfg.DISTILL.GT_ROOT)
-        aux_set = SRDPairDataset(aux_pairs, dark_transform=train_transforms, gt_transform=val_transforms)
+        order_transform = (
+            val_transforms
+            if cfg.DISTILL.PHOTOMETRIC_ORDER_LOSS
+            else None
+        )
+        aux_set = SRDPairDataset(
+            aux_pairs,
+            dark_transform=train_transforms,
+            gt_transform=val_transforms,
+            order_transform=order_transform,
+        )
         aux_sampler_source = [(dark_path, pid, camid, viewid) for dark_path, _, pid, camid, viewid in aux_pairs]
         aux_loader = DataLoader(
             aux_set,

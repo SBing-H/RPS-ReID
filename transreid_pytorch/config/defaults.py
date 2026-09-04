@@ -75,9 +75,34 @@ _C.MODEL.NGTSE_RESIDUAL_GATE = True
 _C.MODEL.NGTSE_WEIGHTED_STRUCTURE = True
 _C.MODEL.NGTSE_ATTENTION_GATE_TEMP = 0.1
 _C.MODEL.DUAL_BRANCH = False
+_C.MODEL.SINGLE_PHOTOMETRIC_ORDER = False
 _C.MODEL.DUAL_LOCAL = False
 _C.MODEL.LOCAL_LOSS_WEIGHT = 0.5
 _C.MODEL.LOCAL_FEAT_WEIGHT = 1.0
+_C.MODEL.PHOTOMETRIC_ORDER = False
+_C.MODEL.PHOTOMETRIC_ORDER_SCALES = [1, 2]
+_C.MODEL.PHOTOMETRIC_ORDER_HIDDEN_DIM = 64
+_C.MODEL.PHOTOMETRIC_ORDER_TEMPERATURE = 0.10
+_C.MODEL.PHOTOMETRIC_ORDER_MARGIN = 0.02
+# Photometric-ordinality ablations. Defaults preserve the original behavior.
+_C.MODEL.PHOTOMETRIC_ORDER_LUMINANCE_DOMAIN = 'log'  # 'log' or 'linear'
+_C.MODEL.PHOTOMETRIC_ORDER_ENCODING = 'soft'  # 'soft' or 'hard'
+_C.MODEL.PHOTOMETRIC_ORDER_BETA_INIT = 0.01
+_C.MODEL.PHOTOMETRIC_ORDER_BETA_LEARNABLE = True
+_C.MODEL.PHOTOMETRIC_ORDER_RMS_MATCH = False
+_C.MODEL.PHOTOMETRIC_ORDER_ATTN_BIAS = False
+_C.MODEL.PHOTOMETRIC_ORDER_ATTN_LAYERS = [11]
+_C.MODEL.PHOTOMETRIC_ORDER_ATTN_SCALE = 0.20
+_C.MODEL.PHOTOMETRIC_ORDER_ATTN_RADIUS = 2
+# Whether to add the photometric-ordinality identity-to-patch attention bias.
+# Keeping this enabled preserves the original V30 behavior.
+_C.MODEL.PHOTOMETRIC_ORDER_ATTN_IDENTITY_BIAS = True
+# A paper-facing switch for the structure branch. When enabled, the model uses
+# photometric-order attention bias together with the existing final-block
+# structure regularization path, without requiring two separate config toggles.
+# Shared switch for the unified photometric-order module (structure attention + NG-TSE).
+# False disables both components together.
+_C.MODEL.PHOTOMETRIC_ORDER_STRUCTURE_ATTENTION = False
 
 # JPM Parameter
 _C.MODEL.JPM = False
@@ -135,6 +160,9 @@ _C.DISTILL.ALPHA = 1.0
 _C.DISTILL.BETA = 0.8
 _C.DISTILL.TEMPERATURE = 4.0
 _C.DISTILL.AUX_LOSS_WEIGHT = 1.0
+_C.DISTILL.PHOTOMETRIC_ORDER_LOSS = False
+_C.DISTILL.PHOTOMETRIC_ORDER_LOSS_WEIGHT = 0.05
+_C.DISTILL.PHOTOMETRIC_ORDER_CONFIDENCE = 0.10
 
 
 # ----------------------------------------------------------------------------- 
@@ -223,6 +251,9 @@ _C.TEST.WEIGHT = ""
 _C.TEST.NECK_FEAT = 'after'
 # Whether feature is nomalized before test, if yes, it is equivalent to cosine distance
 _C.TEST.FEAT_NORM = 'yes'
+# Non-negative values temporarily replace the learned photometric-order beta
+# after checkpoint loading. The negative default preserves checkpoint values.
+_C.TEST.PHOTOMETRIC_ORDER_BETA_OVERRIDE = -1.0
 
 # Name for saving the distmat after testing.
 _C.TEST.DIST_MAT = "dist_mat.npy"

@@ -6,6 +6,8 @@ from .backbones.vit_pytorch import vit_base_patch16_224_TransReID, vit_small_pat
 from .backbones.swin_transformer import swin_base_patch4_window7_224, swin_small_patch4_window7_224
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
 from .backbones.resnet_ibn_a import resnet50_ibn_a,resnet101_ibn_a
+from .modules.photometric_order import PhotometricOrderTokenEmbedding
+from .modules.photometric_order_attention import PhotometricOrderAttentionBias
 
 def shuffle_unit(features, shift, group, begin=1):
 
@@ -68,18 +70,25 @@ def get_transformer_extra_drop_path_kwargs(cfg):
 
 
 def get_transformer_ngtse_kwargs(cfg, enabled=None):
-    use_ngtse = cfg.MODEL.NGTSE if enabled is None else enabled
+    # Unified photometric-order module design:
+    # PHOTOMETRIC_ORDER_STRUCTURE_ATTENTION jointly controls photometric-order
+    # structure attention and NG-TSE. Disabling it means disabling both parts.
+    use_ngtse = (
+        bool(getattr(cfg.MODEL, 'PHOTOMETRIC_ORDER_STRUCTURE_ATTENTION', False))
+        if enabled is None else bool(enabled)
+    )
+    photometric_radius = int(cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_RADIUS)
     return dict(
         ngtse=use_ngtse,
-        ngtse_mode=cfg.MODEL.NGTSE_MODE,
-        ngtse_layers=cfg.MODEL.NGTSE_LAYERS,
-        ngtse_kernel=cfg.MODEL.NGTSE_KERNEL,
-        ngtse_beta=cfg.MODEL.NGTSE_BETA,
-        ngtse_gate_type=cfg.MODEL.NGTSE_GATE_TYPE,
-        ngtse_detach_gate=cfg.MODEL.NGTSE_DETACH_GATE,
-        ngtse_residual_gate=cfg.MODEL.NGTSE_RESIDUAL_GATE,
-        ngtse_weighted_structure=cfg.MODEL.NGTSE_WEIGHTED_STRUCTURE,
-        ngtse_attention_gate_temp=cfg.MODEL.NGTSE_ATTENTION_GATE_TEMP,
+        ngtse_mode='token',
+        ngtse_layers=cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_LAYERS,
+        ngtse_kernel=max(3, photometric_radius * 2 + 1),
+        ngtse_beta=cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_SCALE,
+        ngtse_gate_type='q',
+        ngtse_detach_gate=True,
+        ngtse_residual_gate=True,
+        ngtse_weighted_structure=True,
+        ngtse_attention_gate_temp=cfg.MODEL.PHOTOMETRIC_ORDER_TEMPERATURE,
     )
 
 
@@ -497,6 +506,13 @@ class DualBranchTransformer(nn.Module):
         self.local_feat_weight = float(cfg.MODEL.LOCAL_FEAT_WEIGHT)
         if self.local_feat_weight < 0.0:
             raise ValueError('MODEL.LOCAL_FEAT_WEIGHT must be non-negative.')
+        self.photometric_order_structure_attention = bool(
+            getattr(cfg.MODEL, 'PHOTOMETRIC_ORDER_STRUCTURE_ATTENTION', False)
+        )
+        # Treat photometric-order structure attention and NG-TSE as one unified
+        # photometric-order module. This shared switch enables or disables both.
+        structure_regularization_enabled = self.photometric_order_structure_attention
+        photometric_attention_enabled = self.photometric_order_structure_attention
 
         self.raw_branch = build_transformer(
             num_classes,
@@ -515,7 +531,7 @@ class DualBranchTransformer(nn.Module):
             cfg,
             factory,
             aux_num_classes=0,
-            ngtse_enabled=cfg.MODEL.NGTSE,
+            ngtse_enabled=structure_regularization_enabled,
             local_feature=self.dual_local,
         )
         self._freeze_unused_branch_heads(self.raw_branch)
@@ -533,6 +549,51 @@ class DualBranchTransformer(nn.Module):
         self.neck_feat = cfg.TEST.NECK_FEAT
         self.dropout_rate = cfg.MODEL.DROPOUT_RATE
         self.in_planes = self.raw_branch.in_planes
+
+        self.photometric_order_enabled = bool(cfg.MODEL.PHOTOMETRIC_ORDER)
+        self.photometric_order_rms_match = bool(
+            cfg.MODEL.PHOTOMETRIC_ORDER_RMS_MATCH
+        )
+        self.photometric_order = None
+        if self.photometric_order_enabled:
+            patch_embed = self.struct_branch.base.patch_embed
+            self.photometric_order = PhotometricOrderTokenEmbedding(
+                embed_dim=self.in_planes,
+                patch_rows=int(patch_embed.num_y),
+                patch_cols=int(patch_embed.num_x),
+                pixel_mean=cfg.INPUT.PIXEL_MEAN,
+                pixel_std=cfg.INPUT.PIXEL_STD,
+                scales=cfg.MODEL.PHOTOMETRIC_ORDER_SCALES,
+                hidden_dim=cfg.MODEL.PHOTOMETRIC_ORDER_HIDDEN_DIM,
+                temperature=cfg.MODEL.PHOTOMETRIC_ORDER_TEMPERATURE,
+                margin=cfg.MODEL.PHOTOMETRIC_ORDER_MARGIN,
+                luminance_domain=cfg.MODEL.PHOTOMETRIC_ORDER_LUMINANCE_DOMAIN,
+                order_encoding=cfg.MODEL.PHOTOMETRIC_ORDER_ENCODING,
+                beta_init=cfg.MODEL.PHOTOMETRIC_ORDER_BETA_INIT,
+                beta_learnable=cfg.MODEL.PHOTOMETRIC_ORDER_BETA_LEARNABLE,
+            )
+
+        self.photometric_order_attention_enabled = photometric_attention_enabled
+        self.photometric_order_attention_layers = tuple(
+            int(index) for index in cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_LAYERS
+        )
+        self.photometric_order_attention = None
+        if self.photometric_order_attention_enabled:
+            patch_embed = self.struct_branch.base.patch_embed
+            self.photometric_order_attention = PhotometricOrderAttentionBias(
+                patch_rows=int(patch_embed.num_y),
+                patch_cols=int(patch_embed.num_x),
+                pixel_mean=cfg.INPUT.PIXEL_MEAN,
+                pixel_std=cfg.INPUT.PIXEL_STD,
+                scales=cfg.MODEL.PHOTOMETRIC_ORDER_SCALES,
+                temperature=cfg.MODEL.PHOTOMETRIC_ORDER_TEMPERATURE,
+                margin=cfg.MODEL.PHOTOMETRIC_ORDER_MARGIN,
+                luminance_domain=cfg.MODEL.PHOTOMETRIC_ORDER_LUMINANCE_DOMAIN,
+                order_encoding=cfg.MODEL.PHOTOMETRIC_ORDER_ENCODING,
+                bias_scale=cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_SCALE,
+                local_radius=cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_RADIUS,
+                use_identity_bias=cfg.MODEL.PHOTOMETRIC_ORDER_ATTN_IDENTITY_BIAS,
+            )
 
         self.fusion = nn.Linear(self.in_planes * 2, self.in_planes, bias=False)
         self.fusion.apply(weights_init_xavier)
@@ -606,15 +667,59 @@ class DualBranchTransformer(nn.Module):
                 submodule.ngtse = None
 
     @staticmethod
-    def _extract_branch_feat(branch, x, cam_label=None, view_label=None):
-        global_feat = branch.base(x, cam_label=cam_label, view_label=view_label)
+    def _extract_branch_feat(
+            branch,
+            x,
+            cam_label=None,
+            view_label=None,
+            patch_token_residual=None,
+            patch_token_residual_scale=None,
+            patch_token_residual_rms_match=False,
+            attention_bias=None,
+            attention_bias_layers=None,
+    ):
+        base_kwargs = dict(cam_label=cam_label, view_label=view_label)
+        if patch_token_residual is not None:
+            base_kwargs['patch_token_residual'] = patch_token_residual
+            base_kwargs['patch_token_residual_scale'] = patch_token_residual_scale
+            base_kwargs['patch_token_residual_rms_match'] = patch_token_residual_rms_match
+        if attention_bias is not None:
+            base_kwargs['attention_bias'] = attention_bias
+            base_kwargs['attention_bias_layers'] = attention_bias_layers
+        global_feat = branch.base(x, **base_kwargs)
         if branch.reduce_feat_dim:
             global_feat = branch.fcneck(global_feat)
         return global_feat
 
-    def _extract_branch_local_feats(self, branch, global_block, local_block, x, cam_label=None, view_label=None):
-        features = branch.base(x, cam_label=cam_label, view_label=view_label)
-        global_feat = global_block(features)[:, 0]
+    def _extract_branch_local_feats(
+            self,
+            branch,
+            global_block,
+            local_block,
+            x,
+            cam_label=None,
+            view_label=None,
+            patch_token_residual=None,
+            patch_token_residual_scale=None,
+            patch_token_residual_rms_match=False,
+            global_attention_bias=None,
+    ):
+        base_kwargs = dict(cam_label=cam_label, view_label=view_label)
+        if patch_token_residual is not None:
+            base_kwargs['patch_token_residual'] = patch_token_residual
+            base_kwargs['patch_token_residual_scale'] = patch_token_residual_scale
+            base_kwargs['patch_token_residual_rms_match'] = patch_token_residual_rms_match
+        features = branch.base(x, **base_kwargs)
+        if global_attention_bias is None:
+            global_features = global_block(features)
+        else:
+            global_features = global_block[0](
+                features,
+                attention_bias=global_attention_bias,
+            )
+            for module in list(global_block.children())[1:]:
+                global_features = module(global_features)
+        global_feat = global_features[:, 0]
 
         feature_length = features.size(1) - 1
         patch_length = feature_length // self.divide_length
@@ -633,7 +738,41 @@ class DualBranchTransformer(nn.Module):
             local_feats.append(part_feat)
         return global_feat, local_feats
 
-    def forward(self, x, label=None, cam_label=None, view_label=None, auxiliary=False):
+    def forward(
+            self,
+            x,
+            label=None,
+            cam_label=None,
+            view_label=None,
+            auxiliary=False,
+            photometric_order_pair=None,
+    ):
+        struct_order_tokens = None
+        struct_order_scale = None
+        if self.photometric_order is not None:
+            struct_order_tokens = self.photometric_order(
+                x,
+                apply_beta=not self.photometric_order_rms_match,
+            )
+            if self.photometric_order_rms_match:
+                struct_order_scale = self.photometric_order.beta
+        structure_attention_bias = None
+        if self.photometric_order_attention is not None:
+            structure_attention_bias = self.photometric_order_attention(x)
+        order_consistency_outputs = None
+        if photometric_order_pair is not None:
+            if self.photometric_order is None:
+                raise RuntimeError(
+                    'Photometric-order consistency requires MODEL.PHOTOMETRIC_ORDER=True.'
+                )
+            if len(photometric_order_pair) != 2:
+                raise ValueError(
+                    'photometric_order_pair must contain aligned dark and normal images.'
+                )
+            order_consistency_outputs = self.photometric_order.paired_order_prediction(
+                photometric_order_pair[0],
+                photometric_order_pair[1],
+            )
         if self.dual_local:
             raw_feat, raw_local_feats = self._extract_branch_local_feats(
                 self.raw_branch,
@@ -650,10 +789,24 @@ class DualBranchTransformer(nn.Module):
                 x,
                 cam_label=cam_label,
                 view_label=view_label,
+                patch_token_residual=struct_order_tokens,
+                patch_token_residual_scale=struct_order_scale,
+                patch_token_residual_rms_match=self.photometric_order_rms_match,
+                global_attention_bias=structure_attention_bias,
             )
         else:
             raw_feat = self._extract_branch_feat(self.raw_branch, x, cam_label=cam_label, view_label=view_label)
-            struct_feat = self._extract_branch_feat(self.struct_branch, x, cam_label=cam_label, view_label=view_label)
+            struct_feat = self._extract_branch_feat(
+                self.struct_branch,
+                x,
+                cam_label=cam_label,
+                view_label=view_label,
+                patch_token_residual=struct_order_tokens,
+                patch_token_residual_scale=struct_order_scale,
+                patch_token_residual_rms_match=self.photometric_order_rms_match,
+                attention_bias=structure_attention_bias,
+                attention_bias_layers=self.photometric_order_attention_layers,
+            )
         global_feat = self.fusion(torch.cat([raw_feat, struct_feat], dim=1))
         feat = self.bottleneck(global_feat)
         feat_cls = self.dropout(feat)
@@ -661,7 +814,10 @@ class DualBranchTransformer(nn.Module):
         if auxiliary:
             if self.aux_classifier is None:
                 raise RuntimeError('Auxiliary classifier is not initialized.')
-            return self.aux_classifier(feat_cls), global_feat
+            auxiliary_outputs = (self.aux_classifier(feat_cls), global_feat)
+            if order_consistency_outputs is not None:
+                auxiliary_outputs += (order_consistency_outputs,)
+            return auxiliary_outputs
 
         if self.training:
             if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
@@ -754,6 +910,135 @@ class DualBranchTransformer(nn.Module):
                         own_state[target_key].copy_(value)
 
 
+class SinglePhotometricOrderTransformer(DualBranchTransformer):
+    """Single RGB+photometric-order path with the same local heads as the dual-path model."""
+
+    def __init__(self, num_classes, camera_num, view_num, cfg, factory, aux_num_classes=0):
+        if not cfg.MODEL.PHOTOMETRIC_ORDER:
+            raise ValueError('SinglePhotometricOrderTransformer requires MODEL.PHOTOMETRIC_ORDER=True.')
+        # Reuse the proven branch/head construction, then remove every raw-path/fusion parameter.
+        # The existing DualBranchTransformer execution path is not modified.
+        super().__init__(num_classes, camera_num, view_num, cfg, factory, aux_num_classes)
+        del self.raw_branch
+        del self.fusion
+        if self.dual_local:
+            del self.raw_global_block
+            del self.raw_local_block
+            del self.local_fusion
+
+    def forward(
+            self,
+            x,
+            label=None,
+            cam_label=None,
+            view_label=None,
+            auxiliary=False,
+            photometric_order_pair=None,
+    ):
+        order_tokens = self.photometric_order(
+            x,
+            apply_beta=not self.photometric_order_rms_match,
+        )
+        order_scale = (
+            self.photometric_order.beta
+            if self.photometric_order_rms_match
+            else None
+        )
+        order_consistency_outputs = None
+        if photometric_order_pair is not None:
+            if len(photometric_order_pair) != 2:
+                raise ValueError(
+                    'photometric_order_pair must contain aligned dark and normal images.'
+                )
+            order_consistency_outputs = self.photometric_order.paired_order_prediction(
+                photometric_order_pair[0],
+                photometric_order_pair[1],
+            )
+        if self.dual_local:
+            global_feat, local_feats = self._extract_branch_local_feats(
+                self.struct_branch,
+                self.struct_global_block,
+                self.struct_local_block,
+                x,
+                cam_label=cam_label,
+                view_label=view_label,
+                patch_token_residual=order_tokens,
+                patch_token_residual_scale=order_scale,
+                patch_token_residual_rms_match=self.photometric_order_rms_match,
+            )
+        else:
+            global_feat = self._extract_branch_feat(
+                self.struct_branch,
+                x,
+                cam_label=cam_label,
+                view_label=view_label,
+                patch_token_residual=order_tokens,
+                patch_token_residual_scale=order_scale,
+                patch_token_residual_rms_match=self.photometric_order_rms_match,
+            )
+
+        feat = self.bottleneck(global_feat)
+        feat_cls = self.dropout(feat)
+        if auxiliary:
+            if self.aux_classifier is None:
+                raise RuntimeError('Auxiliary classifier is not initialized.')
+            auxiliary_outputs = (self.aux_classifier(feat_cls), global_feat)
+            if order_consistency_outputs is not None:
+                auxiliary_outputs += (order_consistency_outputs,)
+            return auxiliary_outputs
+
+        if self.training:
+            if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
+                cls_score = self.classifier(feat_cls, label)
+            else:
+                cls_score = self.classifier(feat_cls)
+            if self.dual_local:
+                local_bn_feats = [
+                    bottleneck(local_feat)
+                    for bottleneck, local_feat in zip(self.local_bottlenecks, local_feats)
+                ]
+                local_scores = [
+                    classifier(self.dropout(local_bn_feat))
+                    for classifier, local_bn_feat in zip(self.local_classifiers, local_bn_feats)
+                ]
+                return [cls_score] + local_scores, [global_feat] + local_feats
+            return cls_score, global_feat
+
+        if self.dual_local:
+            local_bn_feats = [
+                bottleneck(local_feat)
+                for bottleneck, local_feat in zip(self.local_bottlenecks, local_feats)
+            ]
+            local_feat_scale = self.local_feat_weight / self.divide_length
+            if self.neck_feat == 'after':
+                return torch.cat(
+                    [feat] + [local_bn_feat * local_feat_scale for local_bn_feat in local_bn_feats],
+                    dim=1,
+                )
+            return torch.cat(
+                [global_feat] + [local_feat * local_feat_scale for local_feat in local_feats],
+                dim=1,
+            )
+
+        if self.neck_feat == 'after':
+            return feat
+        return global_feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path, map_location='cpu')
+        if 'state_dict' in param_dict:
+            param_dict = param_dict['state_dict']
+        own_state = self.state_dict()
+        for key, value in param_dict.items():
+            clean_key = key.replace('module.', '')
+            candidates = (clean_key, 'struct_branch.' + clean_key)
+            for candidate in candidates:
+                if candidate in own_state and own_state[candidate].shape == value.shape:
+                    own_state[candidate].copy_(value)
+                    break
+        print('Loading pretrained model from {}'.format(trained_path))
+
+
 
 __factory_T_type = {
     'vit_base_patch16_224_TransReID': vit_base_patch16_224_TransReID,
@@ -766,9 +1051,21 @@ __factory_T_type = {
 
 def make_model(cfg, num_class, camera_num, view_num, aux_num_class=0, is_teacher=False):
     if cfg.MODEL.NAME == 'transformer':
+        if not is_teacher and cfg.MODEL.DUAL_BRANCH and cfg.MODEL.SINGLE_PHOTOMETRIC_ORDER:
+            raise ValueError('MODEL.DUAL_BRANCH and MODEL.SINGLE_PHOTOMETRIC_ORDER cannot both be True.')
         if cfg.MODEL.DUAL_BRANCH and not is_teacher:
             model = DualBranchTransformer(num_class, camera_num, view_num, cfg, __factory_T_type, aux_num_classes=aux_num_class)
             print('===========building dual-branch transformer student===========')
+        elif cfg.MODEL.SINGLE_PHOTOMETRIC_ORDER and not is_teacher:
+            model = SinglePhotometricOrderTransformer(
+                num_class,
+                camera_num,
+                view_num,
+                cfg,
+                __factory_T_type,
+                aux_num_classes=aux_num_class,
+            )
+            print('===========building single photometric-order transformer student===========')
         elif cfg.MODEL.JPM:
             model = build_transformer_local(
                 num_class,

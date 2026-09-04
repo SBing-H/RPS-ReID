@@ -69,10 +69,17 @@ def build_srd_pairs(dark_root, gt_root, split='bounding_box_train'):
 
 
 class SRDPairDataset(Dataset):
-    def __init__(self, pairs, dark_transform=None, gt_transform=None):
+    def __init__(
+        self,
+        pairs,
+        dark_transform=None,
+        gt_transform=None,
+        order_transform=None,
+    ):
         self.pairs = pairs
         self.dark_transform = dark_transform
         self.gt_transform = gt_transform
+        self.order_transform = order_transform
 
     def __len__(self):
         return len(self.pairs)
@@ -82,20 +89,34 @@ class SRDPairDataset(Dataset):
         dark_img = read_image(dark_path)
         gt_img = read_image(gt_path)
 
+        # The ordinary dark view keeps the original ReID augmentation.  The
+        # extra order view uses the deterministic GT geometry so patch-wise
+        # normal/dark order supervision remains spatially aligned.
+        order_dark_img = None
+        if self.order_transform is not None:
+            order_dark_img = self.order_transform(dark_img)
+
         if self.dark_transform is not None:
             dark_img = self.dark_transform(dark_img)
         if self.gt_transform is not None:
             gt_img = self.gt_transform(gt_img)
 
-        return dark_img, gt_img, pid, camid, viewid, dark_path, gt_path
+        sample = (dark_img, gt_img, pid, camid, viewid, dark_path, gt_path)
+        if order_dark_img is not None:
+            sample += (order_dark_img,)
+        return sample
 
 
 def srd_pair_collate_fn(batch):
-    dark_imgs, gt_imgs, pids, camids, viewids, dark_paths, gt_paths = zip(*batch)
+    has_order_view = len(batch[0]) == 8
+    if has_order_view:
+        dark_imgs, gt_imgs, pids, camids, viewids, dark_paths, gt_paths, order_dark_imgs = zip(*batch)
+    else:
+        dark_imgs, gt_imgs, pids, camids, viewids, dark_paths, gt_paths = zip(*batch)
     pids = torch.tensor(pids, dtype=torch.int64)
     camids = torch.tensor(camids, dtype=torch.int64)
     viewids = torch.tensor(viewids, dtype=torch.int64)
-    return (
+    collated = (
         torch.stack(dark_imgs, dim=0),
         torch.stack(gt_imgs, dim=0),
         pids,
@@ -104,3 +125,6 @@ def srd_pair_collate_fn(batch):
         dark_paths,
         gt_paths,
     )
+    if has_order_view:
+        collated += (torch.stack(order_dark_imgs, dim=0),)
+    return collated

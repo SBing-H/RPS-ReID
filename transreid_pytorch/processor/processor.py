@@ -7,7 +7,7 @@ from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
 from torch.cuda import amp
 import torch.distributed as dist
-from loss import dkd_loss
+from loss import dkd_loss, photometric_order_consistency_loss
 
 
 def _build_best_metric(mAP, cmc):
@@ -21,6 +21,14 @@ def _is_better_metric(current, best, eps=1e-12):
         if current_value < best_value - eps:
             return False
     return False
+
+
+def _get_photometric_order_beta(model):
+    base_model = model.module if hasattr(model, 'module') else model
+    order_module = getattr(base_model, 'photometric_order', None)
+    if order_module is None:
+        return None
+    return float(order_module.beta.detach().cpu())
 
 
 def do_train(cfg,
@@ -59,8 +67,18 @@ def do_train(cfg,
     main_loss_meter = AverageMeter()
     aux_loss_meter = AverageMeter()
     kd_loss_meter = AverageMeter()
+    order_loss_meter = AverageMeter()
     acc_meter = AverageMeter()
     use_distill = cfg.DISTILL.ENABLED and teacher_model is not None and aux_loader is not None
+    use_order_loss = bool(cfg.DISTILL.PHOTOMETRIC_ORDER_LOSS)
+    if use_order_loss and not use_distill:
+        raise RuntimeError(
+            'Photometric-order consistency requires enabled paired distillation data.'
+        )
+    if use_order_loss and not cfg.MODEL.PHOTOMETRIC_ORDER:
+        raise RuntimeError(
+            'Photometric-order consistency requires MODEL.PHOTOMETRIC_ORDER=True.'
+        )
 
     evaluator = R1_mAP_eval(
         num_query,
@@ -80,6 +98,7 @@ def do_train(cfg,
         main_loss_meter.reset()
         aux_loss_meter.reset()
         kd_loss_meter.reset()
+        order_loss_meter.reset()
         acc_meter.reset()
         evaluator.reset()
         model.train()
@@ -99,7 +118,15 @@ def do_train(cfg,
                 except StopIteration:
                     aux_iter = iter(aux_loader)
                     aux_batch = next(aux_iter)
-                dark_img, gt_img, aux_vid, aux_cam, aux_view, _, _ = aux_batch
+                if use_order_loss:
+                    if len(aux_batch) != 8:
+                        raise RuntimeError(
+                            'The paired loader did not return the aligned dark order view.'
+                        )
+                    dark_img, gt_img, aux_vid, aux_cam, aux_view, _, _, order_dark_img = aux_batch
+                    order_dark_img = order_dark_img.to(device)
+                else:
+                    dark_img, gt_img, aux_vid, aux_cam, aux_view, _, _ = aux_batch
                 dark_img = dark_img.to(device)
                 gt_img = gt_img.to(device)
                 aux_target = aux_vid.to(device)
@@ -113,14 +140,35 @@ def do_train(cfg,
                 loss = main_loss
                 aux_loss = None
                 kd_loss_value = None
+                order_loss_value = None
                 if use_distill:
-                    aux_score, aux_feat = model(
-                        dark_img,
-                        aux_target,
+                    auxiliary_forward_kwargs = dict(
                         cam_label=aux_cam_label,
                         view_label=aux_view_label,
                         auxiliary=True,
                     )
+                    # Only photometric-order models accept this optional pair.
+                    # Plain single-path PAL training must not receive the keyword.
+                    if use_order_loss:
+                        auxiliary_forward_kwargs['photometric_order_pair'] = (
+                            order_dark_img,
+                            gt_img,
+                        )
+                    auxiliary_outputs = model(
+                        dark_img,
+                        aux_target,
+                        **auxiliary_forward_kwargs,
+                    )
+                    if use_order_loss:
+                        aux_score, aux_feat, order_outputs = auxiliary_outputs
+                        predicted_order, target_order = order_outputs
+                        order_loss_value = photometric_order_consistency_loss(
+                            predicted_order,
+                            target_order,
+                            confidence_threshold=cfg.DISTILL.PHOTOMETRIC_ORDER_CONFIDENCE,
+                        )
+                    else:
+                        aux_score, aux_feat = auxiliary_outputs
                     with torch.no_grad():
                         teacher_score, _ = teacher_model(
                             gt_img,
@@ -139,6 +187,8 @@ def do_train(cfg,
                         temperature=cfg.DISTILL.TEMPERATURE,
                     )
                     loss = main_loss + cfg.DISTILL.AUX_LOSS_WEIGHT * aux_loss + cfg.DISTILL.LAMBDA_KD * kd_loss_value
+                    if use_order_loss:
+                        loss = loss + cfg.DISTILL.PHOTOMETRIC_ORDER_LOSS_WEIGHT * order_loss_value
 
             scaler.scale(loss).backward()
 
@@ -160,6 +210,8 @@ def do_train(cfg,
             if use_distill:
                 aux_loss_meter.update(aux_loss.item(), dark_img.shape[0])
                 kd_loss_meter.update(kd_loss_value.item(), dark_img.shape[0])
+                if use_order_loss:
+                    order_loss_meter.update(order_loss_value.item(), dark_img.shape[0])
             acc_meter.update(acc, 1)
 
             torch.cuda.synchronize()
@@ -168,8 +220,12 @@ def do_train(cfg,
                     if (n_iter + 1) % log_period == 0:
                         base_lr = scheduler._get_lr(epoch)[0] if cfg.SOLVER.WARMUP_METHOD == 'cosine' else scheduler.get_lr()[0]
                         if use_distill:
-                            logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Main: {:.3f}, Aux: {:.3f}, KD: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
-                                        .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, main_loss_meter.avg, aux_loss_meter.avg, kd_loss_meter.avg, acc_meter.avg, base_lr))
+                            if use_order_loss:
+                                logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Main: {:.3f}, Aux: {:.3f}, KD: {:.3f}, Order: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                                            .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, main_loss_meter.avg, aux_loss_meter.avg, kd_loss_meter.avg, order_loss_meter.avg, acc_meter.avg, base_lr))
+                            else:
+                                logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Main: {:.3f}, Aux: {:.3f}, KD: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                                            .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, main_loss_meter.avg, aux_loss_meter.avg, kd_loss_meter.avg, acc_meter.avg, base_lr))
                         else:
                             logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
                                         .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, acc_meter.avg, base_lr))
@@ -177,8 +233,12 @@ def do_train(cfg,
                 if (n_iter + 1) % log_period == 0:
                     base_lr = scheduler._get_lr(epoch)[0] if cfg.SOLVER.WARMUP_METHOD == 'cosine' else scheduler.get_lr()[0]
                     if use_distill:
-                        logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Main: {:.3f}, Aux: {:.3f}, KD: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
-                                    .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, main_loss_meter.avg, aux_loss_meter.avg, kd_loss_meter.avg, acc_meter.avg, base_lr))
+                        if use_order_loss:
+                            logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Main: {:.3f}, Aux: {:.3f}, KD: {:.3f}, Order: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                                        .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, main_loss_meter.avg, aux_loss_meter.avg, kd_loss_meter.avg, order_loss_meter.avg, acc_meter.avg, base_lr))
+                        else:
+                            logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Main: {:.3f}, Aux: {:.3f}, KD: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                                        .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, main_loss_meter.avg, aux_loss_meter.avg, kd_loss_meter.avg, acc_meter.avg, base_lr))
                     else:
                         logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
                                     .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, acc_meter.avg, base_lr))
@@ -194,6 +254,16 @@ def do_train(cfg,
         else:
             logger.info("Epoch {} done. Time per epoch: {:.3f}[s] Speed: {:.1f}[samples/s]"
                     .format(epoch, time_per_batch * (n_iter + 1), train_loader.batch_size / time_per_batch))
+        order_beta = _get_photometric_order_beta(model)
+        if order_beta is not None and (
+                not cfg.MODEL.DIST_TRAIN or dist.get_rank() == 0
+        ):
+            logger.info(
+                "Photometric-order beta after epoch {}: {:.6f}".format(
+                    epoch,
+                    order_beta,
+                )
+            )
 
         if epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:

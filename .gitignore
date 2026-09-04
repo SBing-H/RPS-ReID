@@ -244,3 +244,6 @@ vit_tiaocan*.yml
 # Local archives and Codex scratch comparisons
 *.zip
 /.codex_compare_transreid_ssl/
+
+# Persistent browser sessions contain visitor authentication cookies.
+/.browser_profiles/

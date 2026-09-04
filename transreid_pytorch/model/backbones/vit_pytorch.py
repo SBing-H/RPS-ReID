@@ -138,12 +138,34 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, return_qnorm=False, return_qk_norm=False, ngtse_attn_cfg=None):
+    def forward(
+            self,
+            x,
+            return_qnorm=False,
+            return_qk_norm=False,
+            ngtse_attn_cfg=None,
+            attention_bias=None,
+    ):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        if attention_bias is not None:
+            if attention_bias.dim() == 3:
+                attention_bias = attention_bias.unsqueeze(1)
+            expected_tail = (N, N)
+            if attention_bias.dim() != 4 or tuple(attention_bias.shape[-2:]) != expected_tail:
+                raise RuntimeError(
+                    'Attention bias must have shape [B, 1|H, N, N], got {}.'.format(
+                        tuple(attention_bias.shape)
+                    )
+                )
+            if attention_bias.shape[0] not in (1, B):
+                raise RuntimeError('Attention-bias batch dimension is incompatible.')
+            if attention_bias.shape[1] not in (1, self.num_heads):
+                raise RuntimeError('Attention-bias head dimension is incompatible.')
+            attn = attn + attention_bias.to(device=attn.device, dtype=attn.dtype)
         if ngtse_attn_cfg is not None:
             beta = ngtse_attn_cfg.get('beta', 0.25)
             eps = ngtse_attn_cfg.get('eps', 1e-6)
@@ -214,22 +236,36 @@ class Block(nn.Module):
                     weighted_structure=ngtse_cfg.get('weighted_structure', True),
                 )
 
-    def forward(self, x):
+    def forward(self, x, attention_bias=None):
         y = self.norm1(x)
         if self.use_ngtse:
             attn_cfg = self.ngtse_cfg if self.ngtse_mode in ('attention', 'both') else None
             if self.ngtse_mode in ('token', 'both') and self.ngtse_gate_type == 'qk':
-                attn_out, q_norm, k_norm = self.attn(y, return_qk_norm=True, ngtse_attn_cfg=attn_cfg)
+                attn_out, q_norm, k_norm = self.attn(
+                    y,
+                    return_qk_norm=True,
+                    ngtse_attn_cfg=attn_cfg,
+                    attention_bias=attention_bias,
+                )
                 x = x + self.drop_path(attn_out)
                 x = x + self.drop_path(self.ngtse(x, q_norm, k_norm))
             elif self.ngtse_mode in ('token', 'both'):
-                attn_out, q_norm = self.attn(y, return_qnorm=True, ngtse_attn_cfg=attn_cfg)
+                attn_out, q_norm = self.attn(
+                    y,
+                    return_qnorm=True,
+                    ngtse_attn_cfg=attn_cfg,
+                    attention_bias=attention_bias,
+                )
                 x = x + self.drop_path(attn_out)
                 x = x + self.drop_path(self.ngtse(x, q_norm))
             else:
-                x = x + self.drop_path(self.attn(y, ngtse_attn_cfg=attn_cfg))
+                x = x + self.drop_path(self.attn(
+                    y,
+                    ngtse_attn_cfg=attn_cfg,
+                    attention_bias=attention_bias,
+                ))
         else:
-            x = x + self.drop_path(self.attn(y))
+            x = x + self.drop_path(self.attn(y, attention_bias=attention_bias))
         if self.use_extra_drop_path:
             x = x + self.drop_path(torch.zeros_like(x))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
@@ -388,9 +424,52 @@ class TransReID(nn.Module):
         self.num_classes = num_classes
         self.fc = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, camera_id, view_id):
+    def forward_features(
+            self,
+            x,
+            camera_id,
+            view_id,
+            patch_token_residual=None,
+            patch_token_residual_scale=None,
+            patch_token_residual_rms_match=False,
+            attention_bias=None,
+            attention_bias_layers=None,
+    ):
         B = x.shape[0]
         x = self.patch_embed(x)
+        if patch_token_residual is not None:
+            if patch_token_residual.shape != x.shape:
+                raise RuntimeError(
+                    'Patch-token residual shape {} does not match patch tokens {}.'.format(
+                        tuple(patch_token_residual.shape),
+                        tuple(x.shape),
+                    )
+                )
+            residual = patch_token_residual.to(device=x.device, dtype=x.dtype)
+            if patch_token_residual_rms_match:
+                # Match the per-sample RMS of the order residual to the patch
+                # tokens before applying the explicit injection coefficient.
+                # Detaching the reference RMS avoids an unnecessary gradient
+                # path from the order branch into the patch embedding scale.
+                patch_rms = x.detach().float().square().mean(
+                    dim=(1, 2), keepdim=True
+                ).sqrt()
+                residual_float = residual.float()
+                residual_rms = residual_float.square().mean(
+                    dim=(1, 2), keepdim=True
+                ).sqrt().clamp_min(1e-6)
+                residual = (
+                    residual_float * (patch_rms / residual_rms)
+                ).to(dtype=x.dtype)
+            if patch_token_residual_scale is not None:
+                if torch.is_tensor(patch_token_residual_scale):
+                    residual_scale = patch_token_residual_scale.to(
+                        device=x.device, dtype=x.dtype
+                    )
+                else:
+                    residual_scale = x.new_tensor(patch_token_residual_scale)
+                residual = residual * residual_scale
+            x = x + residual
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
@@ -406,13 +485,28 @@ class TransReID(nn.Module):
 
         x = self.pos_drop(x)
 
+        if attention_bias_layers is None:
+            attention_bias_layers = set()
+        else:
+            attention_bias_layers = set(int(index) for index in attention_bias_layers)
+
         if self.local_feature:
-            for blk in self.blocks[:-1]:
-                x = blk(x)
+            for block_index, blk in enumerate(self.blocks[:-1]):
+                block_bias = (
+                    attention_bias
+                    if block_index in attention_bias_layers
+                    else None
+                )
+                x = blk(x, attention_bias=block_bias)
             return x
         else:
-            for blk in self.blocks:
-                x = blk(x)
+            for block_index, blk in enumerate(self.blocks):
+                block_bias = (
+                    attention_bias
+                    if block_index in attention_bias_layers
+                    else None
+                )
+                x = blk(x, attention_bias=block_bias)
 
             x = self.norm(x)
         if self.gem_pool:
@@ -420,8 +514,27 @@ class TransReID(nn.Module):
             return x[:, 0] + gf
         return x[:, 0]
 
-    def forward(self, x, cam_label=None, view_label=None):
-        x = self.forward_features(x, cam_label, view_label)
+    def forward(
+            self,
+            x,
+            cam_label=None,
+            view_label=None,
+            patch_token_residual=None,
+            patch_token_residual_scale=None,
+            patch_token_residual_rms_match=False,
+            attention_bias=None,
+            attention_bias_layers=None,
+    ):
+        x = self.forward_features(
+            x,
+            cam_label,
+            view_label,
+            patch_token_residual=patch_token_residual,
+            patch_token_residual_scale=patch_token_residual_scale,
+            patch_token_residual_rms_match=patch_token_residual_rms_match,
+            attention_bias=attention_bias,
+            attention_bias_layers=attention_bias_layers,
+        )
         return x
 
     def load_param(self, model_path,hw_ratio):

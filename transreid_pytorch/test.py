@@ -1,4 +1,5 @@
 import os
+import torch
 from config import cfg
 import argparse
 from datasets import make_dataloader
@@ -44,6 +45,22 @@ if __name__ == "__main__":
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num = view_num)
     model.load_param(cfg.TEST.WEIGHT)
+    beta_override = float(cfg.TEST.PHOTOMETRIC_ORDER_BETA_OVERRIDE)
+    if beta_override >= 0.0:
+        order_module = getattr(model, 'photometric_order', None)
+        if order_module is None:
+            raise RuntimeError(
+                'TEST.PHOTOMETRIC_ORDER_BETA_OVERRIDE requires a photometric-order model.'
+            )
+        learned_beta = float(order_module.beta.detach().cpu())
+        with torch.no_grad():
+            order_module.beta.fill_(beta_override)
+        logger.info(
+            'Photometric-order beta overridden for inference: {:.6f} -> {:.6f}'.format(
+                learned_beta,
+                beta_override,
+            )
+        )
 
     if cfg.DATASETS.NAMES == 'VehicleID':
         for trial in range(10):
