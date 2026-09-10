@@ -179,6 +179,7 @@ configs/rgbnt201/vit_base_ics_rgb_srd_dual_photometric_order.yml
 ```text
 .
 |-- figures/                    # Framework figures
+|-- log
 |-- tools/                      # Data synthesis and analysis utilities
 |-- transreid_pytorch/
 |   |-- config/                 # Default configuration
