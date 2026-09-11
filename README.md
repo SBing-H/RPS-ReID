@@ -101,6 +101,11 @@ python tools/build_syn_dark_market_msmt_v3.py \
   --gt-root data/Syn_dark_market_msmt_v3_GT
 ```
 
+Weight files and synthetic dataset are hosted on Baidu Netdisk:
+File: RPS-ReID
+Link: [https://pan.baidu.com/s/1TYINpWz4zOL5LQ4gi8-ORQ?pwd=ztct](https://pan.baidu.com/s/1TYINpWz4zOL5LQ4gi8-ORQ?pwd=ztct)
+Access Code: ztct
+
 ## Training
 
 Run all training and evaluation commands from `transreid_pytorch`.
